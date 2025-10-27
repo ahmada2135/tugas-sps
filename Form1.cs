@@ -22,7 +22,7 @@ namespace CoolingTowerSimulation
 
         // Parameter Controls
         private NumericUpDown numAmbientTemp, numHumidity, numWindSpeed, numMechanicalVib, numWaterTemp;
-        private Button btnSimulate, btnStopSimulation;
+        private Button btnSimulate, btnStopSimulation, btnUpdateAnalysis;
         private Label lblStatus;
 
         // Plot Views
@@ -45,6 +45,13 @@ namespace CoolingTowerSimulation
 
         // Parameters
         private double ambientTemp, humidity, windSpeed, mechVib, waterTemp;
+
+        // Sensor dynamics (time constants)
+        private readonly double tempTau = 0.5;      // 500ms
+        private readonly double humidityTau = 0.67; // 670ms
+        private readonly double airflowTau = 0.2;   // 200ms
+        private readonly double vibrationTau = 0.02; // 20ms (fast)
+        private readonly double doTau = 1.25;       // 1250ms (slow)
 
         public Form1()
         {
@@ -164,6 +171,22 @@ namespace CoolingTowerSimulation
 
             yPos += 50;
 
+            // Update Analysis Button
+            btnUpdateAnalysis = new Button
+            {
+                Text = "🔄 Update FFT/Laplace/Z Analysis",
+                Location = new Point(20, yPos),
+                Size = new Size(260, 40),
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                BackColor = Color.FromArgb(0, 120, 215),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
+            };
+            btnUpdateAnalysis.Click += (s, ev) => GenerateStaticAnalysis();
+            panel.Controls.Add(btnUpdateAnalysis);
+
+            yPos += 50;
+
             // Status Label
             lblStatus = new Label
             {
@@ -179,10 +202,16 @@ namespace CoolingTowerSimulation
             // Info Label
             Label info = new Label
             {
-                Text = "Sensors: SHT85 (Temp/Humidity), Testo 440 (Airflow), PCB 352C33 (Vibration), Apera DO850 (Water Quality)\n" +
-                       "Real-time simulation akan menampilkan data sensor yang terus update setiap 50ms",
+                Text = "Sensors:\n" +
+                       "• SHT85 (Temperature/Humidity) - τ = 0.5s / 0.67s\n" +
+                       "• Testo 440 (Airflow) - τ = 0.2s\n" +
+                       "• PCB 352C33 (Vibration) - τ = 0.02s\n" +
+                       "• Apera DO850 (Dissolved Oxygen) - τ = 1.25s\n\n" +
+                       "Real-time simulation: Data updates setiap 50ms.\n" +
+                       "⚠️ UBAH PARAMETER SAAT SIMULASI BERJALAN untuk melihat efek langsung!\n" +
+                       "   Contoh: Naikkan suhu → kelembapan turun, airflow naik, DO turun",
                 Location = new Point(20, yPos),
-                Size = new Size(800, 60),
+                Size = new Size(850, 160),
                 Font = new Font("Segoe UI", 9F, FontStyle.Italic),
                 ForeColor = Color.Gray
             };
@@ -223,11 +252,11 @@ namespace CoolingTowerSimulation
             Panel panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
 
             string[] titles = {
-                "Temperature (°C) - REALTIME",
-                "Humidity (%) - REALTIME",
-                "Airflow (m/s) - REALTIME",
-                "Vibration (g) - REALTIME",
-                "Dissolved Oxygen (mg/L) - REALTIME"
+                "Temperature (°C) - REALTIME [SHT85]",
+                "Humidity (%) - REALTIME [SHT85]",
+                "Airflow (m/s) - REALTIME [Testo 440]",
+                "Vibration (g) - REALTIME [PCB 352C33]",
+                "Dissolved Oxygen (mg/L) - REALTIME [Apera DO850]"
             };
 
             for (int i = 0; i < 5; i++)
@@ -245,9 +274,19 @@ namespace CoolingTowerSimulation
                     Position = AxisPosition.Bottom,
                     Title = "Time (s)",
                     Minimum = 0,
-                    Maximum = timeWindow
+                    Maximum = timeWindow,
+                    MajorGridlineStyle = LineStyle.Solid,
+                    MinorGridlineStyle = LineStyle.Dot,
+                    MajorGridlineColor = OxyColors.LightGray
                 });
-                model.Axes.Add(new LinearAxis { Position = AxisPosition.Left, Title = titles[i].Split('-')[0].Trim() });
+                model.Axes.Add(new LinearAxis
+                {
+                    Position = AxisPosition.Left,
+                    Title = titles[i].Split('-')[0].Trim(),
+                    MajorGridlineStyle = LineStyle.Solid,
+                    MinorGridlineStyle = LineStyle.Dot,
+                    MajorGridlineColor = OxyColors.LightGray
+                });
 
                 var series = new LineSeries
                 {
@@ -269,11 +308,11 @@ namespace CoolingTowerSimulation
             Panel panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
 
             string[] titles = {
-                "Temperature Spectrum",
-                "Humidity Spectrum",
-                "Airflow Spectrum",
-                "Vibration Spectrum",
-                "DO Spectrum"
+                "Temperature Spectrum (FFT)",
+                "Humidity Spectrum (FFT)",
+                "Airflow Spectrum (FFT)",
+                "Vibration Spectrum (FFT)",
+                "Dissolved Oxygen Spectrum (FFT)"
             };
 
             for (int i = 0; i < 5; i++)
@@ -286,8 +325,22 @@ namespace CoolingTowerSimulation
                 };
 
                 var model = new PlotModel { Title = titles[i] };
-                model.Axes.Add(new LinearAxis { Position = AxisPosition.Bottom, Title = "Frequency (Hz)" });
-                model.Axes.Add(new LinearAxis { Position = AxisPosition.Left, Title = "Magnitude" });
+                model.Axes.Add(new LinearAxis
+                {
+                    Position = AxisPosition.Bottom,
+                    Title = "Frequency (Hz)",
+                    MajorGridlineStyle = LineStyle.Solid,
+                    MinorGridlineStyle = LineStyle.Dot,
+                    MajorGridlineColor = OxyColors.LightGray
+                });
+                model.Axes.Add(new LinearAxis
+                {
+                    Position = AxisPosition.Left,
+                    Title = "Magnitude",
+                    MajorGridlineStyle = LineStyle.Solid,
+                    MinorGridlineStyle = LineStyle.Dot,
+                    MajorGridlineColor = OxyColors.LightGray
+                });
                 freqPlots[i].Model = model;
 
                 panel.Controls.Add(freqPlots[i]);
@@ -394,20 +447,16 @@ namespace CoolingTowerSimulation
 
         private void BtnSimulate_Click(object sender, EventArgs e)
         {
-            // Get parameters
-            ambientTemp = (double)numAmbientTemp.Value;
-            humidity = (double)numHumidity.Value;
-            windSpeed = (double)numWindSpeed.Value;
-            mechVib = (double)numMechanicalVib.Value;
-            waterTemp = (double)numWaterTemp.Value;
-
             // Reset time
             currentTime = 0;
 
             // Clear all plots
             foreach (var plot in timePlots)
             {
-                ((LineSeries)plot.Model.Series[0]).Points.Clear();
+                if (plot?.Model?.Series != null && plot.Model.Series.Count > 0)
+                {
+                    ((LineSeries)plot.Model.Series[0]).Points.Clear();
+                }
             }
 
             // Start simulation
@@ -417,8 +466,11 @@ namespace CoolingTowerSimulation
             // Update UI
             btnSimulate.Enabled = false;
             btnStopSimulation.Enabled = true;
-            lblStatus.Text = "Status: Running (Realtime)";
+            lblStatus.Text = "Status: Running (Realtime) - Parameter changes will affect graphs immediately";
             lblStatus.ForeColor = Color.Green;
+
+            // KEEP PARAMETERS ENABLED for real-time changes
+            // Parameters will be read every tick
 
             // Also generate static analysis for FFT, Laplace, Z-domain
             GenerateStaticAnalysis();
@@ -433,16 +485,25 @@ namespace CoolingTowerSimulation
             btnStopSimulation.Enabled = false;
             lblStatus.Text = "Status: Stopped";
             lblStatus.ForeColor = Color.Gray;
+
+            // Parameters remain enabled
         }
 
         private void SimulationTimer_Tick(object sender, EventArgs e)
         {
             if (!isSimulating) return;
 
+            // READ PARAMETERS EVERY TICK for real-time changes
+            ambientTemp = (double)numAmbientTemp.Value;
+            humidity = (double)numHumidity.Value;
+            windSpeed = (double)numWindSpeed.Value;
+            mechVib = (double)numMechanicalVib.Value;
+            waterTemp = (double)numWaterTemp.Value;
+
             // Increment time
             currentTime += 0.05; // 50ms
 
-            // Calculate current sensor values
+            // Calculate current sensor values with CURRENT parameters
             double temp = CalculateTemperature(currentTime);
             double hum = CalculateHumidity(currentTime);
             double airflow = CalculateAirflow(currentTime);
@@ -481,43 +542,105 @@ namespace CoolingTowerSimulation
 
         private double CalculateTemperature(double t)
         {
-            return ambientTemp +
-                   2 * Math.Sin(2 * Math.PI * 0.5 * t) +
-                   0.5 * (rand.NextDouble() - 0.5);
+            // Base temperature affected by ambient temp
+            // Add periodic component (thermal cycling) + noise
+            double baseTemp = ambientTemp;
+            double periodic = 2 * Math.Sin(2 * Math.PI * 0.5 * t); // 0.5 Hz oscillation
+            double noise = 0.5 * (rand.NextDouble() - 0.5);
+
+            // Temperature STRONGLY affected by wind speed (cooling effect)
+            double windEffect = -0.8 * (windSpeed - 5); // More pronounced effect
+
+            // Vibration generates heat
+            double vibEffect = 0.3 * mechVib;
+
+            return baseTemp + periodic + windEffect + vibEffect + noise;
         }
 
         private double CalculateHumidity(double t)
         {
-            return humidity +
-                   5 * Math.Sin(2 * Math.PI * 0.3 * t) +
-                   1 * (rand.NextDouble() - 0.5);
+            // Base humidity
+            double baseHumidity = humidity;
+
+            // Humidity STRONGLY affected inversely by temperature (psychrometric relationship)
+            double tempEffect = -1.5 * (ambientTemp - 25); // More pronounced
+
+            // Also affected by water temperature (evaporation)
+            double waterEffect = 0.8 * (waterTemp - 30);
+
+            // Periodic variation
+            double periodic = 5 * Math.Sin(2 * Math.PI * 0.3 * t);
+            double noise = 1 * (rand.NextDouble() - 0.5);
+
+            // Wind reduces local humidity
+            double windEffect = -0.5 * (windSpeed - 5);
+
+            // Clamp between 0-100%
+            double result = baseHumidity + tempEffect + waterEffect + periodic + windEffect + noise;
+            return Math.Max(0, Math.Min(100, result));
         }
 
         private double CalculateAirflow(double t)
         {
-            return windSpeed +
-                   1.5 * Math.Sin(2 * Math.PI * 1.0 * t) +
-                   0.5 * Math.Sin(2 * Math.PI * 3.0 * t) +
-                   0.3 * (rand.NextDouble() - 0.5);
+            // Base airflow from wind speed
+            double baseAirflow = windSpeed;
+
+            // Multiple frequency components (turbulence)
+            double periodic1 = 1.5 * Math.Sin(2 * Math.PI * 1.0 * t);
+            double periodic2 = 0.5 * Math.Sin(2 * Math.PI * 3.0 * t);
+            double noise = 0.3 * (rand.NextDouble() - 0.5);
+
+            // STRONGLY affected by temperature (thermal draft/buoyancy)
+            double tempEffect = 0.3 * (ambientTemp - 25); // Hot air rises, increases airflow
+
+            // Affected by humidity (denser air)
+            double humidityEffect = -0.05 * (humidity - 60);
+
+            return Math.Max(0, baseAirflow + periodic1 + periodic2 + tempEffect + humidityEffect + noise);
         }
 
         private double CalculateVibration(double t)
         {
-            return mechVib * Math.Sin(2 * Math.PI * 60 * t) +
-                   0.2 * Math.Sin(2 * Math.PI * 120 * t) +
-                   0.1 * (rand.NextDouble() - 0.5);
+            // High frequency vibration (60 Hz mechanical + harmonics)
+            double fundamental = mechVib * Math.Sin(2 * Math.PI * 60 * t);
+            double harmonic = 0.2 * Math.Sin(2 * Math.PI * 120 * t);
+            double noise = 0.1 * (rand.NextDouble() - 0.5);
+
+            // Affected by airflow (wind-induced vibration)
+            double windEffect = 0.05 * windSpeed * Math.Sin(2 * Math.PI * 5 * t);
+
+            return fundamental + harmonic + windEffect + noise;
         }
 
         private double CalculateDissolvedOxygen(double t)
         {
+            // DO STRONGLY depends on water temperature (inverse relationship - Henry's Law)
+            // Higher temp = lower DO saturation
             double tempFactor = (waterTemp - 20) / 10.0;
-            return 8.0 - tempFactor +
-                   0.5 * Math.Sin(2 * Math.PI * 0.2 * t) +
-                   0.2 * (rand.NextDouble() - 0.5);
+            double baseDO = 8.0 - 2.0 * tempFactor; // Stronger effect
+
+            // Periodic variation (biological/chemical cycles)
+            double periodic = 0.5 * Math.Sin(2 * Math.PI * 0.2 * t);
+            double noise = 0.2 * (rand.NextDouble() - 0.5);
+
+            // STRONGLY affected by airflow (aeration/oxygen transfer)
+            double aerationEffect = 0.5 * (windSpeed - 5); // More pronounced
+
+            // Affected by ambient temperature (water-air temperature difference affects transfer)
+            double ambientEffect = -0.15 * (ambientTemp - 25);
+
+            return Math.Max(0, baseDO + periodic + aerationEffect + ambientEffect + noise);
         }
 
         private void GenerateStaticAnalysis()
         {
+            // READ CURRENT PARAMETERS
+            ambientTemp = (double)numAmbientTemp.Value;
+            humidity = (double)numHumidity.Value;
+            windSpeed = (double)numWindSpeed.Value;
+            mechVib = (double)numMechanicalVib.Value;
+            waterTemp = (double)numWaterTemp.Value;
+
             // Generate snapshot data for FFT analysis
             int numPoints = (int)(samplingRate * duration);
             double dt = 1.0 / samplingRate;
@@ -586,12 +709,19 @@ namespace CoolingTowerSimulation
                 StrokeThickness = 2
             };
 
-            for (int i = 0; i < frequencies.Length && frequencies[i] < 100; i++)
+            // Show frequencies up to 150 Hz (covers vibration harmonics)
+            int maxIndex = Array.FindLastIndex(frequencies, f => f < 150);
+            if (maxIndex == -1) maxIndex = frequencies.Length - 1;
+
+            for (int i = 0; i < maxIndex; i++)
             {
                 series.Points.Add(new DataPoint(frequencies[i], magnitudes[i]));
             }
 
             plot.Model.Series.Add(series);
+
+            // Update axis limits
+            plot.Model.Axes[0].Maximum = 150;
             plot.Model.InvalidatePlot(true);
         }
 
@@ -617,19 +747,35 @@ namespace CoolingTowerSimulation
             rtbLaplace.AppendText($"  z₁ = {zeros[0]:F1} (Temperature dynamics)\n");
             rtbLaplace.AppendText($"  z₂ = {zeros[1]:F1} (Humidity coupling)\n\n");
 
-            double[] poles = { -2.0, -1.5, -5.0, -50.0, -0.8 };
-            rtbLaplace.AppendText("Poles (denominator roots):\n");
-            rtbLaplace.AppendText($"  p₁ = {poles[0]:F1}  (Temperature sensor)\n");
-            rtbLaplace.AppendText($"  p₂ = {poles[1]:F1}  (Humidity sensor)\n");
-            rtbLaplace.AppendText($"  p₃ = {poles[2]:F1}  (Airflow sensor)\n");
-            rtbLaplace.AppendText($"  p₄ = {poles[3]:F1} (Vibration sensor)\n");
-            rtbLaplace.AppendText($"  p₅ = {poles[4]:F1}  (Water quality sensor)\n\n");
+            // Poles from sensor time constants: p = -1/τ
+            double[] poles = {
+                -1.0 / tempTau,      // -2.0 (Temperature sensor)
+                -1.0 / humidityTau,  // -1.49 (Humidity sensor)
+                -1.0 / airflowTau,   // -5.0 (Airflow sensor)
+                -1.0 / vibrationTau, // -50.0 (Vibration sensor)
+                -1.0 / doTau         // -0.8 (Water quality sensor)
+            };
+
+            rtbLaplace.AppendText("Poles (denominator roots - from sensor time constants):\n");
+            rtbLaplace.AppendText($"  p₁ = {poles[0]:F2}  (Temperature: τ={tempTau}s)\n");
+            rtbLaplace.AppendText($"  p₂ = {poles[1]:F2}  (Humidity: τ={humidityTau}s)\n");
+            rtbLaplace.AppendText($"  p₃ = {poles[2]:F2}  (Airflow: τ={airflowTau}s)\n");
+            rtbLaplace.AppendText($"  p₄ = {poles[3]:F1} (Vibration: τ={vibrationTau}s)\n");
+            rtbLaplace.AppendText($"  p₅ = {poles[4]:F2}  (Water Quality: τ={doTau}s)\n\n");
 
             rtbLaplace.AppendText("System Characteristics:\n");
-            rtbLaplace.AppendText("  • All poles have NEGATIVE real parts → STABLE\n");
-            rtbLaplace.AppendText($"  • Dominant pole: p₅ = {poles[4]:F1} (slowest)\n");
+            rtbLaplace.AppendText("  • All poles have NEGATIVE real parts → STABLE ✓\n");
+            rtbLaplace.AppendText($"  • Dominant pole: p₅ = {poles[4]:F2} (slowest response)\n");
             rtbLaplace.AppendText($"  • Fastest pole: p₄ = {poles[3]:F1} (vibration)\n");
             rtbLaplace.AppendText("  • System order: 5th order\n");
+            rtbLaplace.AppendText("  • Stability margin: All poles in LHP (Left Half Plane)\n\n");
+
+            rtbLaplace.AppendText("Physical Interpretation:\n");
+            rtbLaplace.AppendText("  • Temperature sensor has moderate response (500ms)\n");
+            rtbLaplace.AppendText("  • Humidity sensor is slower (670ms settling)\n");
+            rtbLaplace.AppendText("  • Airflow sensor is fast (200ms response)\n");
+            rtbLaplace.AppendText("  • Vibration sensor is very fast (20ms for dynamics)\n");
+            rtbLaplace.AppendText("  • DO sensor is slowest (1.25s due to chemical kinetics)\n");
 
             // Update plot
             CreatePoleZeroPlot(plotLaplace, poles, zeros, "S-Plane");
@@ -646,53 +792,72 @@ namespace CoolingTowerSimulation
             rtbZDomain.AppendText("═══════════════════════════════════════════════════════════\n\n");
 
             rtbZDomain.AppendText($"Sampling Frequency: {samplingRate} Hz\n");
-            rtbZDomain.AppendText($"Sampling Period: T = {T:F6} seconds\n\n");
+            rtbZDomain.AppendText($"Sampling Period: T = {T:F6} seconds\n");
+            rtbZDomain.AppendText($"Nyquist Frequency: {samplingRate / 2} Hz\n\n");
 
-            rtbZDomain.AppendText("Z-Transform using Tustin (Bilinear) method:\n");
-            rtbZDomain.AppendText("         2   z - 1\n");
-            rtbZDomain.AppendText("    s = ─── · ─────\n");
-            rtbZDomain.AppendText("         T   z + 1\n\n");
+            rtbZDomain.AppendText("Z-Transform Conversion:\n");
+            rtbZDomain.AppendText("For continuous pole p in s-domain:\n");
+            rtbZDomain.AppendText("  z = e^(p·T)  (Zero-Order Hold method)\n\n");
 
             // Calculate discrete poles
-            double[] poles_s = { -2.0, -1.5, -5.0, -50.0, -0.8 };
+            double[] poles_s = {
+                -1.0 / tempTau,      // -2.0
+                -1.0 / humidityTau,  // -1.49
+                -1.0 / airflowTau,   // -5.0
+                -1.0 / vibrationTau, // -50.0
+                -1.0 / doTau         // -0.8
+            };
             double[] zeros_s = { -0.5, -1.2 };
 
             double[] poles_z = poles_s.Select(p => Math.Exp(p * T)).ToArray();
             double[] zeros_z = zeros_s.Select(z => Math.Exp(z * T)).ToArray();
 
-            rtbZDomain.AppendText("Discrete Poles (from s-domain):\n");
+            rtbZDomain.AppendText("Discrete Poles (from s-domain via ZOH):\n");
             for (int i = 0; i < poles_z.Length; i++)
             {
-                rtbZDomain.AppendText($"  z_pole{i + 1} = e^({poles_s[i]:F1}·T) = {poles_z[i]:F6}\n");
+                string sensorName = i == 0 ? "Temperature" : i == 1 ? "Humidity" :
+                                   i == 2 ? "Airflow" : i == 3 ? "Vibration" : "DO";
+                rtbZDomain.AppendText($"  z_p{i + 1} = e^({poles_s[i]:F2}·T) = {poles_z[i]:F6}  ({sensorName})\n");
             }
             rtbZDomain.AppendText("\n");
 
             rtbZDomain.AppendText("Discrete Zeros:\n");
             for (int i = 0; i < zeros_z.Length; i++)
             {
-                rtbZDomain.AppendText($"  z_zero{i + 1} = e^({zeros_s[i]:F1}·T) = {zeros_z[i]:F6}\n");
+                rtbZDomain.AppendText($"  z_z{i + 1} = e^({zeros_s[i]:F1}·T) = {zeros_z[i]:F6}\n");
             }
             rtbZDomain.AppendText("\n");
 
-            rtbZDomain.AppendText("Stability Analysis:\n");
+            rtbZDomain.AppendText("Stability Analysis (Unit Circle Test):\n");
+            rtbZDomain.AppendText("For discrete-time stability, all poles must satisfy |z| < 1\n\n");
+
             bool stable = true;
             for (int i = 0; i < poles_z.Length; i++)
             {
                 double magnitude = Math.Abs(poles_z[i]);
-                rtbZDomain.AppendText($"  |z_pole{i + 1}| = {magnitude:F6} ");
+                string sensorName = i == 0 ? "Temp" : i == 1 ? "Hum" :
+                                   i == 2 ? "Air" : i == 3 ? "Vib" : "DO";
+                rtbZDomain.AppendText($"  |z_p{i + 1}| = {magnitude:F6}  [{sensorName}]  ");
                 if (magnitude < 1.0)
-                    rtbZDomain.AppendText("✓ (inside unit circle)\n");
+                    rtbZDomain.AppendText("✓ Inside unit circle\n");
                 else
                 {
-                    rtbZDomain.AppendText("✗ (outside unit circle)\n");
+                    rtbZDomain.AppendText("✗ Outside unit circle\n");
                     stable = false;
                 }
             }
 
+            rtbZDomain.AppendText("\n");
             if (stable)
-                rtbZDomain.AppendText("\n→ System Status: STABLE ✓\n");
+                rtbZDomain.AppendText("→ System Status: STABLE ✓\n");
             else
-                rtbZDomain.AppendText("\n→ System Status: UNSTABLE ✗\n");
+                rtbZDomain.AppendText("→ System Status: UNSTABLE ✗\n");
+
+            rtbZDomain.AppendText("\nDigital Control Implications:\n");
+            rtbZDomain.AppendText($"  • Sampling rate {samplingRate} Hz is adequate\n");
+            rtbZDomain.AppendText("  • All sensors discretized with stable poles\n");
+            rtbZDomain.AppendText("  • System suitable for digital control implementation\n");
+            rtbZDomain.AppendText($"  • Fastest dynamics (vibration) sampled at {samplingRate / (2 * Math.PI * 60):F1}x per cycle\n");
 
             // Update plot with unit circle
             CreatePoleZeroPlotWithUnitCircle(plotZDomain, poles_z, zeros_z);
@@ -713,7 +878,9 @@ namespace CoolingTowerSimulation
                 Title = "Real",
                 MajorGridlineStyle = LineStyle.Solid,
                 MinorGridlineStyle = LineStyle.Dot,
-                MajorGridlineColor = OxyColors.LightGray
+                MajorGridlineColor = OxyColors.LightGray,
+                AxislineStyle = LineStyle.Solid,
+                AxislineThickness = 2
             });
 
             model.Axes.Add(new LinearAxis
@@ -722,7 +889,9 @@ namespace CoolingTowerSimulation
                 Title = "Imaginary",
                 MajorGridlineStyle = LineStyle.Solid,
                 MinorGridlineStyle = LineStyle.Dot,
-                MajorGridlineColor = OxyColors.LightGray
+                MajorGridlineColor = OxyColors.LightGray,
+                AxislineStyle = LineStyle.Solid,
+                AxislineThickness = 2
             });
 
             // Vertical line at Re = 0 (stability boundary for s-plane)
@@ -790,7 +959,9 @@ namespace CoolingTowerSimulation
                 MinorGridlineStyle = LineStyle.Dot,
                 MajorGridlineColor = OxyColors.LightGray,
                 Minimum = -1.5,
-                Maximum = 1.5
+                Maximum = 1.5,
+                AxislineStyle = LineStyle.Solid,
+                AxislineThickness = 2
             };
 
             var yAxis = new LinearAxis
@@ -801,7 +972,9 @@ namespace CoolingTowerSimulation
                 MinorGridlineStyle = LineStyle.Dot,
                 MajorGridlineColor = OxyColors.LightGray,
                 Minimum = -1.5,
-                Maximum = 1.5
+                Maximum = 1.5,
+                AxislineStyle = LineStyle.Solid,
+                AxislineThickness = 2
             };
 
             model.Axes.Add(xAxis);
