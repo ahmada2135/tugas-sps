@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.IO; // Tambahan untuk file handling
+using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Windows.Forms;
@@ -12,7 +12,6 @@ using OxyPlot.Axes;
 using OxyPlot.Annotations;
 using MathNet.Numerics;
 using MathNet.Numerics.IntegralTransforms;
-// Wajib: Pastikan NuGet 'Microsoft.Web.WebView2' sudah terinstall
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Web.WebView2.Core;
 
@@ -22,32 +21,41 @@ namespace CoolingTowerSimulation
     {
         // Controls
         private TabControl tabControl;
-        // UPDATE: Menambahkan tab3DVisualization
         private TabPage tabParameters, tabTimeDomain, tabFrequencyDomain, tabLaplace, tabZDomain, tabFormulas, tab3DVisualization;
-        // 3D Viewer Control
         private WebView2 webView3D;
+
         // Parameter Controls
         private NumericUpDown numAmbientTemp, numHumidity, numWindSpeed, numMechanicalVib, numWaterTemp;
         private Button btnSimulate, btnStopSimulation, btnUpdateAnalysis;
         private Label lblStatus;
+
         // Plot Views
         private readonly PlotView[] timePlots = new PlotView[5];
         private readonly PlotView[] freqPlots = new PlotView[5];
         private PlotView plotLaplace, plotZDomain;
         private RichTextBox rtbLaplace, rtbZDomain, rtbFormulas;
+
         // Data Storage
         private SensorData sensorData;
-        // Multi-Rate Sampling
-        private readonly int[] samplingRates = new int[5] { 2, 1, 5, 1000, 1 };
-        private readonly double duration = 10.0;
+
+        // Multi-Rate Sampling (REVISI: Menggunakan double[] dan nilai sesuai gambar tabel)
+        // Index: [0:Temp, 1:Hum, 2:Air, 3:Vib, 4:DO]
+        // SHT85=400Hz, Testo=1.25Hz, PCB=10000Hz, DO=0.033Hz
+        private readonly double[] samplingRates = new double[5] { 400, 400, 1.25, 10000, 0.033 };
+
+        // Duration diperpanjang sedikit agar sensor lambat (DO) tetap mendapat sampel data yang cukup untuk FFT
+        private readonly double duration = 60.0;
+
         // Realtime simulation
         private Timer simulationTimer;
         private double currentTime = 0;
         private readonly double timeWindow = 10.0;
         private bool isSimulating = false;
         private Random rand = new Random(42);
+
         // Parameters
         private double ambientTemp, humidity, windSpeed, mechVib, waterTemp;
+
         // Sensor time constants
         private readonly double tempTau = 0.5;
         private readonly double humidityTau = 0.67;
@@ -65,7 +73,7 @@ namespace CoolingTowerSimulation
         private void InitializeComponent()
         {
             this.SuspendLayout();
-            this.ClientSize = new Size(1400, 900);
+            this.ClientSize = new System.Drawing.Size(1400, 900);
             this.Text = "Cooling Tower Analysis - 3D Model Visualization Included";
             this.StartPosition = FormStartPosition.CenterScreen;
             this.ResumeLayout(false);
@@ -80,10 +88,11 @@ namespace CoolingTowerSimulation
         private void InitializeUI()
         {
             tabControl = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9F) };
+
             // Inisialisasi Tab
             tabParameters = new TabPage("Parameter Input");
             tabFormulas = new TabPage("Physics Models");
-            tab3DVisualization = new TabPage("3D Model Visualization"); // Tab Baru
+            tab3DVisualization = new TabPage("3D Model Visualization");
             tabTimeDomain = new TabPage("Time Domain (REALTIME)");
             tabFrequencyDomain = new TabPage("Frequency Domain (FFT)");
             tabLaplace = new TabPage("S-Domain (Laplace)");
@@ -93,7 +102,7 @@ namespace CoolingTowerSimulation
             tabControl.TabPages.AddRange(new[] {
                 tabParameters,
                 tabFormulas,
-                tab3DVisualization, // Masukkan tab 3D disini
+                tab3DVisualization,
                 tabTimeDomain,
                 tabFrequencyDomain,
                 tabLaplace,
@@ -103,11 +112,12 @@ namespace CoolingTowerSimulation
             // Inisialisasi Konten
             InitializeParameterTab();
             InitializeFormulaTab();
-            Initialize3DTab(); // Fungsi inisialisasi 3D
+            Initialize3DTab();
             InitializeTimeDomainTab();
             InitializeFrequencyTab();
             InitializeLaplaceTab();
             InitializeZDomainTab();
+
             this.Controls.Add(tabControl);
         }
 
@@ -115,66 +125,50 @@ namespace CoolingTowerSimulation
         private async void Initialize3DTab()
         {
             Panel panel3D = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black };
-            // Inisialisasi WebView2
+
             webView3D = new WebView2
             {
                 Dock = DockStyle.Fill
             };
-            // Pastikan WebView2 Core terinisialisasi
+
             try
             {
                 await webView3D.EnsureCoreWebView2Async(null);
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Gagal memuat WebView2 Runtime. Pastikan Microsoft Edge WebView2 Runtime terinstall.\nError: " + ex.Message);
+                MessageBox.Show("Gagal memuat WebView2 Runtime.\nError: " + ex.Message);
                 return;
             }
+
             panel3D.Controls.Add(webView3D);
             tab3DVisualization.Controls.Add(panel3D);
-            // Memuat File GLB
+
             Load3DModel();
         }
 
         private async void Load3DModel()
         {
-            // 1. Siapkan WebView2
             if (webView3D != null && webView3D.CoreWebView2 == null)
             {
                 await webView3D.EnsureCoreWebView2Async();
             }
 
-            // 2. Ambil File
             string currentDir = AppDomain.CurrentDomain.BaseDirectory;
             string glbPath = Path.Combine(currentDir, "cooling_tower.glb");
 
             if (!File.Exists(glbPath))
             {
-                MessageBox.Show("File cooling_tower.glb tidak ditemukan!");
-                return;
-            }
-
-            // 3. Cek ukuran file (batas aman sekitar 1.5MB agar NavigateToString tidak error)
-            FileInfo fileInfo = new FileInfo(glbPath);
-            long fileSizeInBytes = fileInfo.Length;
-            double fileSizeInMB = fileSizeInBytes / (1024.0 * 1024.0);
-
-            if (fileSizeInMB > 1.5) // Misalnya, batas 1.5MB
-            {
-                MessageBox.Show($"File cooling_tower.glb terlalu besar ({fileSizeInMB:F2} MB). " +
-                                "Ukuran file terlalu besar untuk dimuat dalam aplikasi saat ini. " +
-                                "Harap gunakan file GLB yang lebih kecil.");
+                // Placeholder message if file not found
                 return;
             }
 
             try
             {
-                // 4. Convert ke Base64
                 byte[] modelBytes = File.ReadAllBytes(glbPath);
                 string base64Model = Convert.ToBase64String(modelBytes);
                 string modelUri = $"data:model/gltf-binary;base64,{base64Model}";
 
-                // 5. HTML sederhana untuk model-viewer
                 string htmlContent = $@"
 <!DOCTYPE html>
 <html>
@@ -202,8 +196,6 @@ namespace CoolingTowerSimulation
     </model-viewer>
 </body>
 </html>";
-
-                // 6. Navigate ke string HTML
                 webView3D.NavigateToString(htmlContent);
             }
             catch (Exception ex)
@@ -215,45 +207,35 @@ namespace CoolingTowerSimulation
         // --- TAB PHYSICS FORMULAS ---
         private void InitializeFormulaTab()
         {
-            // 1. Container Utama: TableLayoutPanel
-            // Kita bagi layar menjadi 2 baris dengan tinggi masing-masing 50% layar
             TableLayoutPanel mainTable = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 2,
                 Padding = new Padding(10),
-                BackColor = Color.WhiteSmoke // Warna background sedikit abu agar kontras
+                BackColor = Color.WhiteSmoke
             };
 
-            // Atur agar kedua gambar berbagi ruang layar secara adil (50% - 50%)
             mainTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            mainTable.RowStyles.Add(new RowStyle(SizeType.Percent, 50F)); // Baris 1: 50% tinggi
-            mainTable.RowStyles.Add(new RowStyle(SizeType.Percent, 50F)); // Baris 2: 50% tinggi
+            mainTable.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            mainTable.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
 
-            // 2. Tambahkan Bagian Input Formulas (Baris 0)
             AddFormulaSection(mainTable, "Rumus Input Sensor", "input_formulas.png", 0);
-
-            // 3. Tambahkan Bagian Simulation Formulas (Baris 1)
             AddFormulaSection(mainTable, "Rumus Simulasi Program", "simulation_formulas.png", 1);
 
-            // Tambahkan ke Tab
             tabFormulas.Controls.Add(mainTable);
         }
 
-        // Helper Method: Untuk membuat section gambar agar kode lebih rapi & reusable
         private void AddFormulaSection(TableLayoutPanel parentTable, string titleText, string imageName, int rowIndex)
         {
-            // Panel container untuk setiap section
             Panel container = new Panel
             {
                 Dock = DockStyle.Fill,
                 Margin = new Padding(5),
                 BackColor = Color.White,
-                BorderStyle = BorderStyle.FixedSingle // Memberi bingkai tipis agar rapi
+                BorderStyle = BorderStyle.FixedSingle
             };
 
-            // 1. Label Judul
             Label lblTitle = new Label
             {
                 Text = titleText,
@@ -261,26 +243,23 @@ namespace CoolingTowerSimulation
                 Height = 35,
                 Font = new Font("Segoe UI", 11F, FontStyle.Bold),
                 TextAlign = ContentAlignment.MiddleCenter,
-                BackColor = Color.FromArgb(240, 240, 240), // Warna header soft
+                BackColor = Color.FromArgb(240, 240, 240),
                 ForeColor = Color.Black
             };
 
-            // 2. PictureBox (Logika Anti-Crop)
             PictureBox pb = new PictureBox
             {
-                Dock = DockStyle.Fill,              // Mengisi sisa ruang di bawah label
-                SizeMode = PictureBoxSizeMode.Zoom, // KUNCI: Gambar di-scale agar muat (Fit) tanpa crop
-                BackColor = Color.White,            // Background putih jika rasio gambar beda dengan panel
-                Padding = new Padding(5)            // Memberi jarak sedikit dari bingkai
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.White,
+                Padding = new Padding(5)
             };
 
-            // Load Gambar dengan Error Handling
             string imagePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, imageName);
             if (File.Exists(imagePath))
             {
                 try
                 {
-                    // Menggunakan FileStream agar file tidak terkunci (optional, tapi good practice)
                     using (var fs = new FileStream(imagePath, FileMode.Open, FileAccess.Read))
                     {
                         pb.Image = Image.FromStream(fs);
@@ -293,25 +272,18 @@ namespace CoolingTowerSimulation
             }
             else
             {
-                SetErrorImage(pb, $"File '{imageName}' tidak ditemukan di folder Debug/Release!");
+                SetErrorImage(pb, $"File '{imageName}' tidak ditemukan!");
             }
 
-            // Masukkan kontrol ke container
-            // Urutan Add penting: Label dulu (Top), baru PictureBox (Fill)
             container.Controls.Add(pb);
             container.Controls.Add(lblTitle);
-
-            // Masukkan container ke TableLayoutPanel utama
             parentTable.Controls.Add(container, 0, rowIndex);
         }
 
-        // Helper kecil untuk tampilan jika gambar error/hilang
         private void SetErrorImage(PictureBox pb, string msg)
         {
             pb.Image = null;
-            pb.BackColor = Color.MistyRose; // Warna merah muda tanda error
-
-            // Buat label error di tengah PictureBox
+            pb.BackColor = Color.MistyRose;
             Label lblError = new Label
             {
                 Text = "⚠️ " + msg,
@@ -328,6 +300,7 @@ namespace CoolingTowerSimulation
         {
             Panel panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(20) };
             int yPos = 20;
+
             Label title = new Label
             {
                 Text = "Sensor Input Parameters Configuration",
@@ -337,12 +310,15 @@ namespace CoolingTowerSimulation
             };
             panel.Controls.Add(title);
             yPos += 50;
+
             AddParameterControl(panel, "Ambient Temperature (°C):", 25m, 0m, 50m, ref numAmbientTemp, ref yPos);
             AddParameterControl(panel, "Relative Humidity (%):", 60m, 0m, 100m, ref numHumidity, ref yPos);
             AddParameterControl(panel, "Wind Speed (m/s):", 5m, 0m, 30m, ref numWindSpeed, ref yPos);
             AddParameterControl(panel, "Mechanical Vibration Base (g):", 0.5m, 0m, 5m, ref numMechanicalVib, ref yPos);
             AddParameterControl(panel, "Water Temperature (°C):", 30m, 10m, 60m, ref numWaterTemp, ref yPos);
+
             yPos += 20;
+
             btnSimulate = new Button
             {
                 Text = "▶ Start Realtime Simulation",
@@ -355,6 +331,7 @@ namespace CoolingTowerSimulation
             };
             btnSimulate.Click += BtnSimulate_Click;
             panel.Controls.Add(btnSimulate);
+
             btnStopSimulation = new Button
             {
                 Text = "⏹ Stop Simulation",
@@ -368,7 +345,9 @@ namespace CoolingTowerSimulation
             };
             btnStopSimulation.Click += BtnStopSimulation_Click;
             panel.Controls.Add(btnStopSimulation);
+
             yPos += 50;
+
             btnUpdateAnalysis = new Button
             {
                 Text = "🔄 Update FFT/Laplace/Z Analysis",
@@ -381,7 +360,9 @@ namespace CoolingTowerSimulation
             };
             btnUpdateAnalysis.Click += (s, ev) => GenerateStaticAnalysis();
             panel.Controls.Add(btnUpdateAnalysis);
+
             yPos += 50;
+
             lblStatus = new Label
             {
                 Text = "Status: Stopped",
@@ -391,15 +372,17 @@ namespace CoolingTowerSimulation
                 ForeColor = Color.Gray
             };
             panel.Controls.Add(lblStatus);
+
             yPos += 40;
+
             Label info = new Label
             {
                 Text = "Multi-Rate Sampling Strategy:\n" +
-                       "• Temperature (SHT85): 2 Hz - τ=0.5s, Bandwidth=0.32 Hz\n" +
-                       "• Humidity (SHT85): 1 Hz - τ=0.67s, Bandwidth=0.24 Hz\n" +
-                       "• Airflow (Testo 440): 5 Hz - τ=0.2s, Bandwidth=0.80 Hz\n" +
-                       "• Vibration (PCB 352C33): 1000 Hz - τ=0.02s, captures 60-120 Hz\n" +
-                       "• Dissolved Oxygen (Apera DO850): 1 Hz - τ=1.25s, Bandwidth=0.13 Hz\n" +
+                       "• Temperature (SHT85): 400 Hz - Time Sampling 12.7ms\n" +
+                       "• Humidity (SHT85): 400 Hz - Time Sampling 12.7ms\n" +
+                       "• Airflow (Testo 440): 1.25 Hz - Time Sampling 0.8s\n" +
+                       "• Vibration (PCB 352C33): 10 kHz - Time Sampling 1ms\n" +
+                       "• Dissolved Oxygen (Apera DO850): 0.033 Hz - Time Sampling 30s\n" +
                        "⚠️ UBAH PARAMETER SAAT SIMULASI untuk melihat efek real-time!",
                 Location = new Point(20, yPos),
                 Size = new Size(900, 180),
@@ -407,11 +390,12 @@ namespace CoolingTowerSimulation
                 ForeColor = Color.DarkBlue
             };
             panel.Controls.Add(info);
+
             tabParameters.Controls.Add(panel);
         }
 
         private void AddParameterControl(Panel panel, string label, decimal defaultVal, decimal min, decimal max,
-                                       ref NumericUpDown control, ref int yPos)
+                                         ref NumericUpDown control, ref int yPos)
         {
             Label lbl = new Label
             {
@@ -439,12 +423,13 @@ namespace CoolingTowerSimulation
         {
             Panel panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
             string[] titles = {
-                "Temperature (°C) - REALTIME [SHT85, fs=2Hz]",
-                "Humidity (%) - REALTIME [SHT85, fs=1Hz]",
-                "Airflow (m/s) - REALTIME [Testo 440, fs=5Hz]",
-                "Vibration (g) - REALTIME [PCB 352C33, fs=1000Hz]",
-                "Dissolved Oxygen (mg/L) - REALTIME [Apera DO850, fs=1Hz]"
+                "Temperature (°C) - REALTIME [SHT85]",
+                "Humidity (%) - REALTIME [SHT85]",
+                "Airflow (m/s) - REALTIME [Testo 440]",
+                "Vibration (g) - REALTIME [PCB 352C33]",
+                "Dissolved Oxygen (mg/L) - REALTIME [Apera DO850]"
             };
+
             for (int i = 0; i < 5; i++)
             {
                 timePlots[i] = new PlotView
@@ -454,6 +439,7 @@ namespace CoolingTowerSimulation
                     BackColor = Color.White
                 };
                 var model = new PlotModel { Title = titles[i] };
+
                 model.Axes.Add(new LinearAxis
                 {
                     Position = AxisPosition.Bottom,
@@ -464,6 +450,7 @@ namespace CoolingTowerSimulation
                     MinorGridlineStyle = LineStyle.Dot,
                     MajorGridlineColor = OxyColors.LightGray
                 });
+
                 model.Axes.Add(new LinearAxis
                 {
                     Position = AxisPosition.Left,
@@ -472,6 +459,7 @@ namespace CoolingTowerSimulation
                     MinorGridlineStyle = LineStyle.Dot,
                     MajorGridlineColor = OxyColors.LightGray
                 });
+
                 var series = new LineSeries
                 {
                     Color = OxyColors.Blue,
@@ -482,6 +470,7 @@ namespace CoolingTowerSimulation
                 timePlots[i].Model = model;
                 panel.Controls.Add(timePlots[i]);
             }
+
             tabTimeDomain.Controls.Add(panel);
         }
 
@@ -495,6 +484,7 @@ namespace CoolingTowerSimulation
                 "Vibration Spectrum",
                 "Dissolved Oxygen Spectrum"
             };
+
             for (int i = 0; i < 5; i++)
             {
                 freqPlots[i] = new PlotView
@@ -504,6 +494,7 @@ namespace CoolingTowerSimulation
                     BackColor = Color.White
                 };
                 var model = new PlotModel { Title = titles[i] };
+
                 model.Axes.Add(new LinearAxis
                 {
                     Position = AxisPosition.Bottom,
@@ -512,6 +503,7 @@ namespace CoolingTowerSimulation
                     MinorGridlineStyle = LineStyle.Dot,
                     MajorGridlineColor = OxyColors.LightGray
                 });
+
                 model.Axes.Add(new LinearAxis
                 {
                     Position = AxisPosition.Left,
@@ -520,9 +512,11 @@ namespace CoolingTowerSimulation
                     MinorGridlineStyle = LineStyle.Dot,
                     MajorGridlineColor = OxyColors.LightGray
                 });
+
                 freqPlots[i].Model = model;
                 panel.Controls.Add(freqPlots[i]);
             }
+
             tabFrequencyDomain.Controls.Add(panel);
         }
 
@@ -535,6 +529,7 @@ namespace CoolingTowerSimulation
                 Orientation = Orientation.Vertical,
                 SplitterDistance = 600
             };
+
             rtbLaplace = new RichTextBox
             {
                 Dock = DockStyle.Fill,
@@ -544,6 +539,7 @@ namespace CoolingTowerSimulation
                 Padding = new Padding(10)
             };
             split.Panel1.Controls.Add(rtbLaplace);
+
             Panel plotPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
             Label lblPlot = new Label
             {
@@ -557,6 +553,7 @@ namespace CoolingTowerSimulation
             plotPanel.Controls.Add(plotLaplace);
             plotPanel.Controls.Add(lblPlot);
             split.Panel2.Controls.Add(plotPanel);
+
             mainPanel.Controls.Add(split);
             tabLaplace.Controls.Add(mainPanel);
         }
@@ -570,6 +567,7 @@ namespace CoolingTowerSimulation
                 Orientation = Orientation.Vertical,
                 SplitterDistance = 600
             };
+
             rtbZDomain = new RichTextBox
             {
                 Dock = DockStyle.Fill,
@@ -579,6 +577,7 @@ namespace CoolingTowerSimulation
                 Padding = new Padding(10)
             };
             split.Panel1.Controls.Add(rtbZDomain);
+
             Panel plotPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(10) };
             Label lblPlot = new Label
             {
@@ -592,6 +591,7 @@ namespace CoolingTowerSimulation
             plotPanel.Controls.Add(plotZDomain);
             plotPanel.Controls.Add(lblPlot);
             split.Panel2.Controls.Add(plotPanel);
+
             mainPanel.Controls.Add(split);
             tabZDomain.Controls.Add(mainPanel);
         }
@@ -628,13 +628,14 @@ namespace CoolingTowerSimulation
         private void SimulationTimer_Tick(object sender, EventArgs e)
         {
             if (!isSimulating) return;
+
             ambientTemp = (double)numAmbientTemp.Value;
             humidity = (double)numHumidity.Value;
             windSpeed = (double)numWindSpeed.Value;
             mechVib = (double)numMechanicalVib.Value;
             waterTemp = (double)numWaterTemp.Value;
 
-            currentTime += 0.05; // Tick every 50ms
+            currentTime += 0.05;
 
             UpdateRealtimePlot(timePlots[0], currentTime, CalculateTemperature(currentTime));
             UpdateRealtimePlot(timePlots[1], currentTime, CalculateHumidity(currentTime));
@@ -648,13 +649,11 @@ namespace CoolingTowerSimulation
             var series = (LineSeries)plot.Model.Series[0];
             series.Points.Add(new DataPoint(time, value));
 
-            // Remove old points outside the time window
             while (series.Points.Count > 0 && series.Points[0].X < time - timeWindow)
             {
                 series.Points.RemoveAt(0);
             }
 
-            // Update X-axis to follow the current time
             var xAxis = plot.Model.Axes[0];
             if (time > timeWindow)
             {
@@ -665,6 +664,7 @@ namespace CoolingTowerSimulation
         }
 
         // --- CALCULATIONS ---
+
         private double CalculateTemperature(double t)
         {
             double baseTemp = ambientTemp;
@@ -684,7 +684,7 @@ namespace CoolingTowerSimulation
             double noise = 1 * (rand.NextDouble() - 0.5);
             double windEffect = -0.5 * (windSpeed - 5);
             double result = baseHumidity + tempEffect + waterEffect + periodic + windEffect + noise;
-            return Math.Max(0, Math.Min(100, result)); // Clamp between 0 and 100%
+            return Math.Max(0, Math.Min(100, result));
         }
 
         private double CalculateAirflow(double t)
@@ -729,11 +729,33 @@ namespace CoolingTowerSimulation
 
             sensorData = new SensorData();
 
+            // Loop untuk setiap sensor
             for (int sensorIdx = 0; sensorIdx < 5; sensorIdx++)
             {
-                int fs = samplingRates[sensorIdx];
-                int numPoints = (int)(fs * duration);
+                double fs = samplingRates[sensorIdx];
+
+                // --- PERBAIKAN LOGIKA DURASI ---
+                // Kita butuh minimal jumlah sampel tertentu (misal 128 titik) agar FFT valid.
+                // Jika fs sangat kecil (seperti DO), durasi harus diperpanjang otomatis.
+
+                double minSamples = 128.0;
+                double calculatedDuration = minSamples / fs;
+
+                // Gunakan durasi mana yang lebih panjang: default (60s) atau hasil hitungan.
+                // Untuk DO (0.033Hz): butuh ~3800 detik.
+                // Untuk Vibration (10kHz): tetap pakai duration default (agar tidak out of memory).
+                double localDuration = Math.Max(duration, calculatedDuration);
+
+                // Cegah durasi berlebihan untuk sensor cepat (limit max points)
+                // Jika sample > 200.000, potong durasinya agar aplikasi tidak hang.
+                if (localDuration * fs > 200000)
+                {
+                    localDuration = 200000.0 / fs;
+                }
+
+                int numPoints = (int)(fs * localDuration);
                 double dt = 1.0 / fs;
+
                 double[] timeData = new double[numPoints];
                 double[] valueData = new double[numPoints];
 
@@ -741,6 +763,7 @@ namespace CoolingTowerSimulation
                 {
                     double t = i * dt;
                     timeData[i] = t;
+                    // Kita gunakan fungsi calculate yang sama
                     switch (sensorIdx)
                     {
                         case 0: valueData[i] = CalculateTemperature(t); break;
@@ -750,7 +773,6 @@ namespace CoolingTowerSimulation
                         case 4: valueData[i] = CalculateDissolvedOxygen(t); break;
                     }
                 }
-
                 sensorData.Time[sensorIdx] = timeData;
                 sensorData.SensorValues[sensorIdx] = valueData;
             }
@@ -769,7 +791,8 @@ namespace CoolingTowerSimulation
             }
         }
 
-        private void UpdateFFTPlot(PlotView plot, double[] signal, int fs, string title)
+        // REVISI: Parameter fs diubah jadi double dan logic judul diperbarui
+        private void UpdateFFTPlot(PlotView plot, double[] signal, double fs, string title)
         {
             // Ensure signal length is even for FFT
             int n = signal.Length;
@@ -777,7 +800,7 @@ namespace CoolingTowerSimulation
             {
                 Array.Resize(ref signal, n + 1);
                 signal[n] = 0; // Zero-pad if odd
-                n++; // Update n
+                n++;
             }
 
             var complex = signal.Select(x => new Complex(x, 0)).ToArray();
@@ -790,7 +813,6 @@ namespace CoolingTowerSimulation
             for (int i = 0; i < halfN; i++)
             {
                 frequencies[i] = i * fs / (double)n;
-                // Calculate magnitude and scale
                 magnitudes[i] = complex[i].Magnitude / n * 2;
             }
 
@@ -809,161 +831,86 @@ namespace CoolingTowerSimulation
             }
 
             plot.Model.Series.Add(series);
-            plot.Model.Title = $"{title} Spectrum (fs={fs} Hz, Nyquist={nyquist} Hz)";
-            plot.Model.Axes[0].Maximum = nyquist; // Limit X-axis to Nyquist frequency
+
+            // REVISI: Perhitungan dan Tampilan Time Sampling (Ts) sesuai gambar
+            double Ts = 1.0 / fs;
+
+            // Format tampilan Ts (jika < 1 detik gunakan ms, jika >= 1 detik gunakan s)
+            string tsLabel = Ts < 1.0 ? $"{Ts * 1000:F2} ms" : $"{Ts:F2} s";
+
+            // Update Judul Plot dengan informasi detail
+            plot.Model.Title = $"{title} Spectrum\n(fs = {fs} Hz, Time Sampling (Ts) = {tsLabel})";
+
+            plot.Model.Axes[0].Maximum = nyquist;
             plot.Model.InvalidatePlot(true);
         }
 
         private void UpdateLaplaceDomain()
         {
             rtbLaplace.Clear();
-            rtbLaplace.AppendText("═══════════════════════════════════════════════════════════\n");
-            rtbLaplace.AppendText("   COOLING TOWER TRANSFER FUNCTION - LAPLACE DOMAIN (s)\n");
-            rtbLaplace.AppendText("═══════════════════════════════════════════════════════════\n");
-            rtbLaplace.AppendText("System Transfer Function (Poles Only):\n");
-            rtbLaplace.AppendText("             K\n");
-            rtbLaplace.AppendText("G(s) = ─────────────────────────────────────\n");
-            rtbLaplace.AppendText("       (s + p₁)(s + p₂)(s + p₃)(s + p₄)(s + p₅)\n");
-            rtbLaplace.AppendText("Where: K = 1.5 (System gain)\n");
+            rtbLaplace.AppendText("S-Domain Transfer Function:\n");
+            rtbLaplace.AppendText("G(s) = K / [(s + p1)(s + p2)(s + p3)(s + p4)(s + p5)]\n");
+            rtbLaplace.AppendText("\n");
+            rtbLaplace.AppendText("Poles (from sensor τ):\n");
+            rtbLaplace.AppendText($"p1 = {-1.0 / tempTau:F2} (Temp)\n");
+            rtbLaplace.AppendText($"p2 = {-1.0 / humidityTau:F2} (Hum)\n");
+            rtbLaplace.AppendText($"p3 = {-1.0 / airflowTau:F2} (Air)\n");
+            rtbLaplace.AppendText($"p4 = {-1.0 / vibrationTau:F1} (Vib)\n");
+            rtbLaplace.AppendText($"p5 = {-1.0 / doTau:F2} (DO) <- Dominant\n");
+            rtbLaplace.AppendText("\n");
+            rtbLaplace.AppendText("Stability: All Re(s) < 0 -> STABLE\n");
 
-            double[] poles = {
-                -1.0 / tempTau,
-                -1.0 / humidityTau,
-                -1.0 / airflowTau,
-                -1.0 / vibrationTau,
-                -1.0 / doTau
-            };
-
-            rtbLaplace.AppendText("POLES (dari sensor time constants):\n");
-            rtbLaplace.AppendText($"  p₁ = {poles[0]:F2} (Temp, τ={tempTau}s, fs={samplingRates[0]}Hz)\n");
-            rtbLaplace.AppendText($"  p₂ = {poles[1]:F2} (Hum, τ={humidityTau}s, fs={samplingRates[1]}Hz)\n");
-            rtbLaplace.AppendText($"  p₃ = {poles[2]:F2} (Air, τ={airflowTau}s, fs={samplingRates[2]}Hz)\n");
-            rtbLaplace.AppendText($"  p₄ = {poles[3]:F1} (Vib, τ={vibrationTau}s, fs={samplingRates[3]}Hz)\n");
-            rtbLaplace.AppendText($"  p₅ = {poles[4]:F2} (DO, τ={doTau}s, fs={samplingRates[4]}Hz)\n");
-
-            rtbLaplace.AppendText("STABILITY ANALYSIS (S-PLANE):\n");
-            rtbLaplace.AppendText("  Kriteria: Pole stabil jika Re(s) < 0 (Left Half Plane)\n");
-
-            bool stable = true;
-            foreach (var pole in poles)
-            {
-                if (pole >= 0) stable = false;
-            }
-
-            rtbLaplace.AppendText("  Verifikasi:\n");
-            rtbLaplace.AppendText($"    • p₁ = {poles[0]:F2} < 0 ✓ (di LHP)\n");
-            rtbLaplace.AppendText($"    • p₂ = {poles[1]:F2} < 0 ✓ (di LHP)\n");
-            rtbLaplace.AppendText($"    • p₃ = {poles[2]:F2} < 0 ✓ (di LHP)\n");
-            rtbLaplace.AppendText($"    • p₄ = {poles[3]:F1} < 0 ✓ (di LHP)\n");
-            rtbLaplace.AppendText($"    • p₅ = {poles[4]:F2} < 0 ✓ (di LHP)\n");
-
-            if (stable)
-                rtbLaplace.AppendText("  → SISTEM STABLE ✓ (Semua poles di LHP)\n");
-            else
-                rtbLaplace.AppendText("  → SISTEM UNSTABLE ✗\n");
-
-            rtbLaplace.AppendText("KARAKTERISTIK SISTEM:\n");
-            rtbLaplace.AppendText($"  • Dominant pole: p₅={poles[4]:F2} (paling lambat)\n");
-            rtbLaplace.AppendText($"  • Fastest pole: p₄={poles[3]:F1} (paling cepat)\n");
-            rtbLaplace.AppendText("  • System order: 5th order\n");
-
-            rtbLaplace.AppendText("MULTI-RATE SAMPLING:\n");
-            rtbLaplace.AppendText("  • Setiap sensor sampling sesuai bandwidth-nya\n");
-            rtbLaplace.AppendText("  • Bandwidth = 1/(2πτ)\n");
-            rtbLaplace.AppendText("  • Nyquist criterion terpenuhi semua\n");
-
-            CreatePoleOnlyPlot(plotLaplace, poles);
+            double[] singlePole = { -1.0 / doTau };
+            CreatePoleOnlyPlot(plotLaplace, singlePole, "p₅ (DO - Dominant)");
         }
 
         private void UpdateZDomain()
         {
             rtbZDomain.Clear();
-            rtbZDomain.AppendText("═══════════════════════════════════════════════════════════\n");
-            rtbZDomain.AppendText("   COOLING TOWER DISCRETE TRANSFER FUNCTION - Z DOMAIN\n");
-            rtbZDomain.AppendText("═══════════════════════════════════════════════════════════\n");
-
-            string[] sensorNames = { "Temperature", "Humidity", "Airflow", "Vibration", "DO" };
-            double[] timeConstants = { tempTau, humidityTau, airflowTau, vibrationTau, doTau };
-
-            rtbZDomain.AppendText("MULTI-RATE SAMPLING VERIFICATION:\n");
-            for (int i = 0; i < 5; i++)
-            {
-                double bandwidth = 1.0 / (2 * Math.PI * timeConstants[i]);
-                double nyquistMin = 2 * bandwidth;
-                int fs = samplingRates[i];
-                rtbZDomain.AppendText($"{sensorNames[i]}:\n");
-                rtbZDomain.AppendText($"  τ = {timeConstants[i]:F2}s\n");
-                rtbZDomain.AppendText($"  Bandwidth = {bandwidth:F3} Hz\n");
-                rtbZDomain.AppendText($"  Nyquist (min) = {nyquistMin:F3} Hz\n");
-                rtbZDomain.AppendText($"  Actual fs = {fs} Hz ");
-                if (fs >= nyquistMin)
-                    rtbZDomain.AppendText($"✓ ({fs / nyquistMin:F1}x Nyquist)\n");
-                else
-                    rtbZDomain.AppendText("✗ ALIASING RISK!\n");
-            }
-
-            rtbZDomain.AppendText("Z-TRANSFORM (per sensor):\n");
-            rtbZDomain.AppendText("z = e^(p·T) where T = 1/fs\n");
-
-            double[] poles_s = {
-                -1.0 / tempTau,
-                -1.0 / humidityTau,
-                -1.0 / airflowTau,
-                -1.0 / vibrationTau,
-                -1.0 / doTau
-            };
-            double[] poles_z = new double[5];
-            bool stable = true;
-            rtbZDomain.AppendText("Discrete Poles:\n");
-            for (int i = 0; i < 5; i++)
-            {
-                double T = 1.0 / samplingRates[i];
-                poles_z[i] = Math.Exp(poles_s[i] * T);
-                double mag = Math.Abs(poles_z[i]);
-                rtbZDomain.AppendText($"  z_p{i + 1} = e^({poles_s[i]:F2}×{T:F6}) = {poles_z[i]:F6}\n");
-                rtbZDomain.AppendText($"       |z| = {mag:F6} ");
-                if (mag < 1.0)
-                    rtbZDomain.AppendText($"✓ [{sensorNames[i]}]\n");
-                else
-                {
-                    rtbZDomain.AppendText($"✗ [{sensorNames[i]}]\n");
-                    stable = false;
-                }
-            }
+            rtbZDomain.AppendText("Z-Domain Transfer Function:\n");
+            rtbZDomain.AppendText("G(z) = Z{G(s)} (ZOH)\n");
             rtbZDomain.AppendText("\n");
-            if (stable)
-                rtbZDomain.AppendText("→ ALL POLES INSIDE UNIT CIRCLE → STABLE ✓\n");
-            else
-                rtbZDomain.AppendText("→ UNSTABLE SYSTEM ✗\n");
+            rtbZDomain.AppendText("Conversion: z = e^(sT)\n");
+            rtbZDomain.AppendText("T (sampling time) varies per sensor.\n");
+            rtbZDomain.AppendText("\n");
 
-            rtbZDomain.AppendText("Discrete Zeros (ZOH method):\n");
-            double[] zeros_s = { -0.5, -1.2 }; // Example zeros
-            double T_ref = 1.0 / samplingRates[3]; // Using Vib sampling rate as reference
-            double[] zeros_z = zeros_s.Select(z => Math.Exp(z * T_ref)).ToArray();
-            for (int i = 0; i < zeros_z.Length; i++)
-            {
-                rtbZDomain.AppendText($"  z_z{i + 1} = e^({zeros_s[i]:F1}×{T_ref:F6}) = {zeros_z[i]:F6}\n");
-            }
+            // REVISI: Menggunakan samplingRates[4] yang sudah diupdate (0.033 Hz)
+            // T_DO = 1 / fs = 1 / 0.033 = 30 detik (Sesuai Tabel)
+            double T_DO = 1.0 / samplingRates[4];
 
-            rtbZDomain.AppendText("\nADVANTAGES OF MULTI-RATE SAMPLING:\n");
-            rtbZDomain.AppendText("• Energy efficient (slow sensors use less power)\n");
-            rtbZDomain.AppendText("• Optimal data storage (no redundant samples)\n");
-            rtbZDomain.AppendText("• Realistic (matches sensor physics)\n");
-            rtbZDomain.AppendText("• Meets Nyquist for all channels\n");
+            rtbZDomain.AppendText($"Dominant Pole (s-domain): p5 = {-1.0 / doTau:F2}\n");
+            rtbZDomain.AppendText($"Dominant Pole (z-domain): z_p5 = e^(p5 * T_DO)\n");
+            rtbZDomain.AppendText($"  where T_DO = 1/{samplingRates[4]} Hz = {T_DO:F1} s\n");
+            rtbZDomain.AppendText($"  z_p5 = e^({-1.0 / doTau:F2} * {T_DO:F1}) = {Math.Exp((-1.0 / doTau) * T_DO):F6}\n");
+            rtbZDomain.AppendText("\n");
+            rtbZDomain.AppendText("Example Zero (s-domain): z_s1 = -0.5\n");
+            rtbZDomain.AppendText($"Example Zero (z-domain): z_z1 = e^(z_s1 * T_DO)\n");
+            rtbZDomain.AppendText($"  z_z1 = e^(-0.5 * {T_DO:F1}) = {Math.Exp(-0.5 * T_DO):F6}\n");
+            rtbZDomain.AppendText("\n");
+            rtbZDomain.AppendText("Stability: |z| < 1 for all poles -> STABLE\n");
 
-            CreatePoleZeroPlotWithUnitCircle(plotZDomain, poles_z, zeros_z);
+            double discretePole = Math.Exp((-1.0 / doTau) * T_DO);
+            double discreteZero = Math.Exp(-0.5 * T_DO);
+            CreatePoleZeroPlotWithUnitCircle(plotZDomain, discretePole, discreteZero);
         }
 
-        private void CreatePoleOnlyPlot(PlotView plotView, double[] poles)
+        private void CreatePoleOnlyPlot(PlotView plotView, double[] poles, string poleLabel)
         {
+            if (poles.Length != 1)
+            {
+                // Handle logic appropriately
+            }
+
             var model = new PlotModel
             {
                 Title = "Pole Plot - S-Plane (Stability: LHP)",
                 PlotAreaBorderColor = OxyColors.Black
             };
 
-            double minPole = poles.Min();
-            double range = Math.Abs(minPole) * 1.3;
+            double poleX = poles[0];
+            double margin = 1.0;
+            double range = Math.Max(5.0, Math.Abs(poleX) + margin);
+
             model.Axes.Add(new LinearAxis
             {
                 Position = AxisPosition.Bottom,
@@ -974,8 +921,9 @@ namespace CoolingTowerSimulation
                 AxislineStyle = LineStyle.Solid,
                 AxislineThickness = 2,
                 Minimum = -range,
-                Maximum = range * 0.3 // Slightly positive to show jω axis boundary
+                Maximum = Math.Abs(poleX) > 0.5 ? poleX + margin : 1.0
             });
+
             model.Axes.Add(new LinearAxis
             {
                 Position = AxisPosition.Left,
@@ -985,11 +933,10 @@ namespace CoolingTowerSimulation
                 MajorGridlineColor = OxyColors.LightGray,
                 AxislineStyle = LineStyle.Solid,
                 AxislineThickness = 2,
-                Minimum = -5,
-                Maximum = 5
+                Minimum = -1.0,
+                Maximum = 1.0
             });
 
-            // Add jω-axis (stability boundary)
             model.Annotations.Add(new LineAnnotation
             {
                 Type = LineAnnotationType.Vertical,
@@ -1000,26 +947,24 @@ namespace CoolingTowerSimulation
                 Text = "jω-axis (Stability Boundary)"
             });
 
-            // Add stable region annotation
             var stableRegion = new RectangleAnnotation
             {
                 MinimumX = -range,
                 MaximumX = 0,
-                MinimumY = -5,
-                MaximumY = 5,
-                Fill = OxyColor.FromArgb(30, 0, 200, 0), // Light Green
+                MinimumY = -1.0,
+                MaximumY = 1.0,
+                Fill = OxyColor.FromArgb(30, 0, 200, 0),
                 Text = "STABLE\n(LHP)"
             };
             model.Annotations.Add(stableRegion);
 
-            // Add unstable region annotation
             var unstableRegion = new RectangleAnnotation
             {
                 MinimumX = 0,
-                MaximumX = range * 0.3,
-                MinimumY = -5,
-                MaximumY = 5,
-                Fill = OxyColor.FromArgb(30, 200, 0, 0), // Light Red
+                MaximumX = Math.Abs(poleX) > 0.5 ? poleX + margin : 1.0,
+                MinimumY = -1.0,
+                MaximumY = 1.0,
+                Fill = OxyColor.FromArgb(30, 200, 0, 0),
                 Text = "UNSTABLE\n(RHP)"
             };
             model.Annotations.Add(unstableRegion);
@@ -1030,33 +975,29 @@ namespace CoolingTowerSimulation
                 MarkerSize = 15,
                 MarkerStroke = OxyColors.Blue,
                 MarkerStrokeThickness = 4,
-                Title = "Poles (X)"
+                Title = "Pole (X)"
             };
 
-            string[] labels = { "p₁(Temp)", "p₂(Hum)", "p₃(Air)", "p₄(Vib)", "p₅(DO)" };
-            for (int i = 0; i < poles.Length; i++)
+            poleSeries.Points.Add(new ScatterPoint(poles[0], 0));
+            model.Annotations.Add(new TextAnnotation
             {
-                poleSeries.Points.Add(new ScatterPoint(poles[i], 0));
-                model.Annotations.Add(new TextAnnotation
-                {
-                    Text = labels[i],
-                    TextPosition = new DataPoint(poles[i], 0.3), // Slightly above the pole
-                    Font = "Arial",
-                    FontSize = 9,
-                    TextColor = OxyColors.DarkBlue
-                });
-            }
+                Text = poleLabel,
+                TextPosition = new DataPoint(poles[0], 0.1),
+                Font = "Arial",
+                FontSize = 10,
+                TextColor = OxyColors.DarkBlue
+            });
 
             model.Series.Add(poleSeries);
             plotView.Model = model;
             plotView.Model.InvalidatePlot(true);
         }
 
-        private void CreatePoleZeroPlotWithUnitCircle(PlotView plotView, double[] poles, double[] zeros)
+        private void CreatePoleZeroPlotWithUnitCircle(PlotView plotView, double pole, double zero)
         {
             var model = new PlotModel
             {
-                Title = "Pole-Zero Map (Z-Plane)",
+                Title = "Pole-Zero Map (Z-Plane) - Single Pole & Zero",
                 PlotAreaBorderColor = OxyColors.Black
             };
 
@@ -1088,11 +1029,10 @@ namespace CoolingTowerSimulation
             model.Axes.Add(xAxis);
             model.Axes.Add(yAxis);
 
-            // Add unit circle
             var unitCircle = new FunctionSeries(
                 t => Math.Cos(t),
                 t => Math.Sin(t),
-                0, 2 * Math.PI, 1000) // High resolution for smooth circle
+                0, 2 * Math.PI, 1000)
             {
                 Color = OxyColors.Red,
                 StrokeThickness = 2,
@@ -1101,7 +1041,6 @@ namespace CoolingTowerSimulation
             };
             model.Series.Add(unitCircle);
 
-            // Add real and imaginary axes
             model.Annotations.Add(new LineAnnotation
             {
                 Type = LineAnnotationType.Vertical,
@@ -1119,41 +1058,28 @@ namespace CoolingTowerSimulation
                 LineStyle = LineStyle.Solid
             });
 
-            // Add poles (X)
             var poleSeries = new ScatterSeries
             {
                 MarkerType = MarkerType.Cross,
                 MarkerSize = 12,
                 MarkerStroke = OxyColors.Red,
                 MarkerStrokeThickness = 3,
-                Title = "Poles (X)"
+                Title = "Pole (X)"
             };
-            foreach (var pole in poles)
-            {
-                // Assuming poles are real for this visualization
-                poleSeries.Points.Add(new ScatterPoint(pole, 0));
-            }
+            poleSeries.Points.Add(new ScatterPoint(pole, 0));
             model.Series.Add(poleSeries);
 
-            // Add zeros (O) if any exist
-            if (zeros.Length > 0)
+            var zeroSeries = new ScatterSeries
             {
-                var zeroSeries = new ScatterSeries
-                {
-                    MarkerType = MarkerType.Circle,
-                    MarkerSize = 12,
-                    MarkerStroke = OxyColors.Blue,
-                    MarkerStrokeThickness = 3,
-                    MarkerFill = OxyColors.Transparent, // Make circle transparent inside
-                    Title = "Zeros (O)"
-                };
-                foreach (var zero in zeros)
-                {
-                    // Assuming zeros are real for this visualization
-                    zeroSeries.Points.Add(new ScatterPoint(zero, 0));
-                }
-                model.Series.Add(zeroSeries);
-            }
+                MarkerType = MarkerType.Circle,
+                MarkerSize = 12,
+                MarkerStroke = OxyColors.Blue,
+                MarkerStrokeThickness = 3,
+                MarkerFill = OxyColors.Transparent,
+                Title = "Zero (O)"
+            };
+            zeroSeries.Points.Add(new ScatterPoint(zero, 0));
+            model.Series.Add(zeroSeries);
 
             plotView.Model = model;
             plotView.Model.InvalidatePlot(true);
